@@ -11,8 +11,8 @@
     podman_registry_password: ""
 
     oc_api_url: "https://api.example.com:6443"
-    oc_token: ""
-    oc_cli_download_url: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable/openshift-client-linux.tar.gz"
+    oc_token: ""s
+    oc_cli_download_url: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/4.21.18/openshift-client-linux-4.21.18.tar.gz"
 
   tasks:
     - name: Validasi semua variabel wajib sudah diisi dan valid
