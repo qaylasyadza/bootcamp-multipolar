@@ -15,23 +15,38 @@
     oc_cli_download_url: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable/openshift-client-linux.tar.gz"
 
   tasks:
+    - name: Validasi semua variabel wajib sudah diisi dan valid
+      ansible.builtin.assert:
+        that:
+          - git_repo_url is defined and git_repo_url | length > 0
+          - podman_registry_url is defined and podman_registry_url | length > 0
+          - podman_registry_username is defined and podman_registry_username | length > 0
+          - podman_registry_password is defined and podman_registry_password | length > 0
+          - oc_api_url is defined and oc_api_url | length > 0
+          - oc_token is defined and oc_token | length > 0
+          - oc_api_url is match("^https://.*")
+        fail_msg: "Ada variabel wajib yang kosong atau formatnya salah. Cek kembali Extra Variables di template."
+        success_msg: "Semua input valid, lanjut ke proses instalasi."
 
     # --- Install ---
     - name: Install git, podman and python3
       ansible.builtin.dnf:
-        name: [git, podman, python3]
+        name: 
+          - git-2.55.0-1.fc44
+          - podman-5.6.1-1.fc44
+          - python3-3.14.3-2.fc44 
         state: present
       become: true
 
     - name: Download oc CLI
       ansible.builtin.get_url:
-        url: "{{ oc_cli_download_url }}"
-        dest: "/tmp/openshift-client-linux.tar.gz"
+        url: "https://downloads-openshift-console.apps.rm1.0a51.p1.openshiftapps.com/amd64/linux/oc.tar"
+        dest: "/tmp/openshift-client-linux.tar"
         mode: "0644"
 
     - name: Extract oc to /usr/local/bin
       ansible.builtin.unarchive:
-        src: "/tmp/openshift-client-linux.tar.gz"
+        src: "/tmp/openshift-client-linux.tar"
         dest: "/usr/local/bin"
         remote_src: true
         mode: "0755"
@@ -61,14 +76,15 @@
     # --- podman login ---
     - name: Log in to the container registry with podman
       ansible.builtin.command: "podman login {{ podman_registry_url }} -u {{ podman_registry_username }} -p {{ podman_registry_password }}"
-      when: podman_registry_username | length > 0 and podman_registry_password | length > 0
-      #no_log: true
+      # when: podman_registry_username | length > 0 and podman_registry_password | length > 0
+      no_log: true
 
     # --- oc login ---
     - name: Log in to the OpenShift cluster with oc
-      ansible.builtin.command: "oc login {{ oc_api_url }} --token={{ oc_token }}"
-      when: oc_token | length > 0
-      #no_log: true
+      ansible.builtin.command: "oc login {{ oc_api_url }} --token={{ oc_token }} --insecure-skip-tls-verify"
+      # when: oc_token | length > 0
+      no_log: true          # biar token gak kecetak di console AAP
+
 
     - name: Confirm oc login
       ansible.builtin.command: oc whoami
