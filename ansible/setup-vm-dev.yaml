@@ -43,6 +43,7 @@
         url: "{{ oc_cli_download_url }}"
         dest: "/tmp/openshift-client-linux.tar"
         mode: "0644"
+        force: true
 
     - name: Extract oc to /usr/local/bin
       ansible.builtin.unarchive:
