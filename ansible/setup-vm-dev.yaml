@@ -33,7 +33,7 @@
       ansible.builtin.dnf:
         name: 
           - git-2.55.0-1.fc44
-          - podman-5.6.1-1.fc44
+          - podman-5:5.6.1-1.fc44
           - python3-3.14.3-2.fc44 
         state: present
       become: true
