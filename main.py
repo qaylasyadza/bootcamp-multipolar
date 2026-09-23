@@ -24,7 +24,7 @@ class RequestNewTransaction(BaseModel):
 
 @app.on_event("startup")
 async def init_db():
-    client = AsyncMongoClient("string")
+    client = AsyncMongoClient("mongodb+srv://qaylasyadzaa_db_user:DmPbhntjflHZwyY4@cluster0.nrla93j.mongodb.net/?appName=Cluster0")
     await init_beanie(database=client.bootcamp, document_models=[Transaction])
 
 @app.post("/transaction/add")

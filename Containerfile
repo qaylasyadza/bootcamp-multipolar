@@ -17,5 +17,5 @@ COPY . /app/
 EXPOSE 8000
 
 # Start the FastAPI application
-CMD ["fastapi", "run"]
+CMD ["fastapi", "run", "tasksd1.py"]
 
