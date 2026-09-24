@@ -6,7 +6,8 @@ from typing import Optional
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+import httpx
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -19,6 +20,22 @@ app = FastAPI()
 
 MONGODB_URI = os.getenv("MONGODB_URI")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "bootcamp")
+
+PROFILING_SERVICE_URL = os.getenv("PROFILING_SERVICE_URL", "http://localhost:8001")
+
+async def _trigger_profiling_check() -> None:
+    """
+    Dipanggil sebagai BackgroundTask setelah transaksi baru berhasil
+    disimpan. Sengaja dibungkus try/except: kalau profiling.py lagi
+    down/error, itu TIDAK BOLEH menggagalkan transaksi utama yang
+    sudah keburu tersimpan -- cukup dicatat, tidak dilempar sebagai
+    error ke pemanggil /transaction/add.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(f"{PROFILING_SERVICE_URL}/profiling/check-alert")
+    except Exception as e:
+        print(f"[profiling-trigger] Gagal memanggil profiling service: {e}")
 
 # TASK 1: "Ferdi wants the input to be perfectly logical"
 class TrxType(str, Enum):
@@ -46,7 +63,7 @@ class Transaction(Document):
     trx_type: TrxType
 
     class Settings:
-        name = "trx_collection"
+        name = "ferdi_final"
 
 
 class RequestNewTransaction(BaseModel):
@@ -98,7 +115,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 @app.post("/transaction/add")
-async def add_transaction(request_body: RequestNewTransaction):
+async def add_transaction(request_body: RequestNewTransaction, background_tasks: BackgroundTasks):
     trx_date = (
         datetime.combine(request_body.date, datetime.min.time())
         if request_body.date
@@ -112,6 +129,7 @@ async def add_transaction(request_body: RequestNewTransaction):
         trx_type=request_body.trx_type,
     )
     await trx.insert()
+    background_tasks.add_task(_trigger_profiling_check)
     return trx
 
 @app.get("/transaction")
@@ -294,6 +312,7 @@ async def import_excel(file: UploadFile = File(...)):
         )
 
     valid_transactions = []
+    duplicate_rows = []
     failed_rows = []
 
     for idx, row in df.iterrows():
@@ -309,6 +328,19 @@ async def import_excel(file: UploadFile = File(...)):
 
             trx_type = TrxType.purchase if raw_amount < 0 else TrxType.income
             amount = abs(raw_amount)
+
+            existing = await Transaction.find_one(
+                Transaction.date == trx_date,
+                Transaction.amount == amount,
+                Transaction.method == method,
+                Transaction.desc == desc,
+                Transaction.trx_type == trx_type,
+            )
+            if existing:
+                duplicate_rows.append(
+                    {"row": excel_row_number, "reason": "Data sudah pernah diimport sebelumnya (duplikat), dilewati"}
+                )
+                continue
             
             valid_transactions.append(
                 Transaction(
@@ -328,6 +360,8 @@ async def import_excel(file: UploadFile = File(...)):
     return {
         "total_rows_in_file": len(df),
         "success_count": len(valid_transactions),
+        "duplicate_count": len(duplicate_rows),
         "failed_count": len(failed_rows),
+        "duplicate_rows": duplicate_rows,
         "failed_rows": failed_rows,
     }

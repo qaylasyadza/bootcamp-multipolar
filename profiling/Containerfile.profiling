@@ -11,11 +11,11 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the FastAPI application code into the container
-COPY . /app/
+COPY profiling/profiling.py /app/profiling.py
 
 # Expose the port that the FastAPI application will run on
-EXPOSE 8000
+EXPOSE 8001
 
 # Start the FastAPI application
-CMD ["fastapi", "run", "tasksd1.py"]
+CMD ["fastapi", "run", "profiling.py", "--host", "0.0.0.0", "--port", "8001"]
 

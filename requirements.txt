@@ -3,3 +3,4 @@ beanie
 pandas
 openpyxl
 python-dotenv
+httpx
