@@ -1,0 +1,14 @@
+kind: Service
+apiVersion: v1
+metadata:
+  name: profiling-app
+  labels:
+    app: profiling-app
+spec:
+  ports:
+    - protocol: TCP
+      port: 8001
+      targetPort: 8001
+  selector:
+    app: profiling-app
+    

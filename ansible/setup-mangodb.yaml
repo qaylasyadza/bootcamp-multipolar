@@ -1,0 +1,206 @@
+---
+- name: Deploy MongoDB as a Podman container on the VM
+  hosts: all
+  any_errors_fatal: true
+  become: true
+
+  vars:
+    # --- Versi & image (strict, Task 3) ---
+    mongo_version: "8.0.32"
+    mongo_image: "docker.io/library/mongo:{{ mongo_version }}"
+
+    # --- Container ---
+    mongo_container_name: mongodb
+    mongo_port: 27017
+    mongo_data_dir: /var/lib/mongodb-data
+    mongo_cache_size_gb: "0.25"
+    mongo_memory_limit: "768m"
+
+    # --- User MongoDB ---
+    mongo_root_username: admin
+    mongo_root_password: ""          # diisi dari Credential "MongoDB Credentials"
+    mongo_app_db: bootcamp
+    mongo_app_username: bootcamp_app
+    mongo_app_password: ""           # diisi dari Credential "MongoDB Credentials"
+
+    # Perintah dasar mongosh sebagai root (dipakai beberapa task)
+    mongosh_as_root:
+      - podman
+      - exec
+      - "{{ mongo_container_name }}"
+      - mongosh
+      - --quiet
+      - --username
+      - "{{ mongo_root_username }}"
+      - --password
+      - "{{ mongo_root_password }}"
+      - --authenticationDatabase
+      - admin
+
+    # Perintah dasar mongosh sebagai user app
+    mongosh_as_app:
+      - podman
+      - exec
+      - "{{ mongo_container_name }}"
+      - mongosh
+      - --quiet
+      - --username
+      - "{{ mongo_app_username }}"
+      - --password
+      - "{{ mongo_app_password }}"
+      - --authenticationDatabase
+      - "{{ mongo_app_db }}"
+      - "{{ mongo_app_db }}"
+
+  pre_tasks:
+    # --- Pre-validation: format input ---
+    - name: Validate MongoDB version
+      ansible.builtin.assert:
+        that:
+          - mongo_version is match('^\d+\.\d+\.\d+$')
+        fail_msg: "mongo_version harus versi lengkap X.Y.Z, bukan 'latest' atau '8' (sekarang: {{ mongo_version }})"
+        success_msg: "mongo_version valid"
+
+    - name: Validate MongoDB container settings
+      ansible.builtin.assert:
+        that:
+          - mongo_data_dir is match('^/.+')
+          - mongo_port | int > 0
+          - mongo_root_username | length > 0
+          - mongo_app_username | length > 0
+          - mongo_app_db | length > 0
+          - mongo_root_username != mongo_app_username
+        fail_msg: "Cek mongo_data_dir (path absolut), mongo_port, dan username (root dan app wajib diisi dan harus berbeda)"
+        success_msg: "Pengaturan container dan user valid"
+
+    - name: Validate secrets (MongoDB passwords)
+      ansible.builtin.assert:
+        that:
+          - mongo_root_password | length >= 12
+          - mongo_app_password | length >= 12
+          - mongo_root_password != mongo_app_password
+        fail_msg: "Password MongoDB kosong, kurang dari 12 karakter, atau root dan app sama. Cek credential 'MongoDB Credentials' di template."
+        success_msg: "Password MongoDB tersedia"
+      no_log: true
+
+    # --- Pre-validation: prasyarat di VM ---
+    - name: Check podman is installed on the VM
+      ansible.builtin.command: podman --version
+      changed_when: false
+
+  tasks:
+    # --- Persiapan storage ---
+    - name: Create MongoDB data directory
+      ansible.builtin.file:
+        path: "{{ mongo_data_dir }}"
+        state: directory
+        owner: "999"          # uid user 'mongodb' di dalam image resmi
+        group: "999"
+        mode: "0700"
+
+    # --- Image (exact version) ---
+    - name: Pull MongoDB image (exact version)
+      containers.podman.podman_image:
+        name: "{{ mongo_image }}"
+
+    # --- Container ---
+    - name: Run MongoDB container
+      containers.podman.podman_container:
+        name: "{{ mongo_container_name }}"
+        image: "{{ mongo_image }}"
+        state: started
+        restart_policy: always
+        memory: "{{ mongo_memory_limit }}"
+        ports:
+          - "{{ mongo_port }}:27017"
+        volumes:
+          - "{{ mongo_data_dir }}:/data/db:Z"
+        env:
+          MONGO_INITDB_ROOT_USERNAME: "{{ mongo_root_username }}"
+          MONGO_INITDB_ROOT_PASSWORD: "{{ mongo_root_password }}"
+        command:
+          - mongod
+          - --wiredTigerCacheSizeGB
+          - "{{ mongo_cache_size_gb }}"
+      no_log: true
+
+    - name: Enable podman-restart so the container starts after VM reboot
+      ansible.builtin.systemd_service:
+        name: podman-restart
+        enabled: true
+
+    # --- Tunggu MongoDB siap ---
+    - name: Wait for MongoDB port to open
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ mongo_port }}"
+        timeout: 120
+
+    - name: Wait until MongoDB accepts authenticated connections
+      ansible.builtin.command:
+        argv: "{{ mongosh_as_root + ['--eval', 'db.adminCommand({ ping: 1 }).ok'] }}"
+      register: mongo_ping
+      until: mongo_ping.stdout | trim == '1'
+      retries: 12
+      delay: 5
+      changed_when: false
+      no_log: true
+
+    # --- User aplikasi (least privilege) ---
+    - name: Create or update the application user
+      ansible.builtin.command:
+        argv: "{{ mongosh_as_root + ['--eval', create_app_user_js] }}"
+      vars:
+        create_app_user_js: >-
+          const appDb = db.getSiblingDB('{{ mongo_app_db }}');
+          const spec = { pwd: '{{ mongo_app_password }}',
+                         roles: [{ role: 'readWrite', db: '{{ mongo_app_db }}' }] };
+          if (appDb.getUser('{{ mongo_app_username }}')) {
+            appDb.updateUser('{{ mongo_app_username }}', spec); print('updated');
+          } else {
+            appDb.createUser(Object.assign({ user: '{{ mongo_app_username }}' }, spec)); print('created');
+          }
+      register: app_user
+      changed_when: "'created' in app_user.stdout"
+      no_log: true
+
+    # --- Validate ---
+    - name: Get MongoDB server version
+      ansible.builtin.command:
+        argv: "{{ mongosh_as_root + ['--eval', 'db.version()'] }}"
+      register: mongo_server_version
+      changed_when: false
+      no_log: true
+
+    - name: Check app user can read and write its own database
+      ansible.builtin.command:
+        argv: "{{ mongosh_as_app + ['--eval', app_rw_js] }}"
+      vars:
+        app_rw_js: >-
+          const r = db._healthcheck.insertOne({ ts: new Date() });
+          db._healthcheck.deleteOne({ _id: r.insertedId });
+          print(r.acknowledged);
+      register: app_rw
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Check app user is denied on the admin database
+      ansible.builtin.command:
+        argv: "{{ mongosh_as_app + ['--eval', \"db.getSiblingDB('admin').system.users.findOne()\"] }}"
+      register: app_admin
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Verify MongoDB version and user permissions
+      ansible.builtin.assert:
+        that:
+          - mongo_server_version.stdout | trim == mongo_version
+          - app_rw.rc == 0 and (app_rw.stdout | trim) == 'true'
+          - app_admin.rc != 0
+        fail_msg: >-
+          Verifikasi gagal. Versi terpasang={{ mongo_server_version.stdout | trim }} (harusnya {{ mongo_version }}),
+          app read/write ke {{ mongo_app_db }}={{ 'OK' if app_rw.rc == 0 else 'GAGAL' }},
+          app ditolak di admin={{ 'YA' if app_admin.rc != 0 else 'TIDAK (terlalu banyak akses!)' }}
+        success_msg: "MongoDB {{ mongo_version }} berjalan, user app hanya bisa akses {{ mongo_app_db }}"
